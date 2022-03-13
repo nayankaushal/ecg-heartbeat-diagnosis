@@ -1,0 +1,292 @@
+---
+title: "ECG Heartbeat Diagnosis"
+author: "Nayan Kaushal"
+date: "3/9/2022"
+output: pdf_document
+---
+
+```{r}
+#loading relevant libraries
+library(MASS)
+library(ggplot2)
+library(dplyr)
+library(class)
+library(dummies)
+library(tidyverse)
+library(glmnet)
+library(reshape2)
+library(randomForest)
+library(tree)
+```
+
+#Overview:
+
+The dataset I will be analyzing consists of Electrocardiogram (ECG) signals of single heartbeats, derived from The PTB Diagnostic ECG Database, and associated labels describing whether the heartbeat is normal or abnormal.
+
+The dataset consists of 187 vectors in the dataset describing the th heartbeat ECG signal. This is a set of 187 measurements at consecutive time points (in the preprocessing step the signals have been cropped, downsampled to sampling frequency 125Hz, and padded with zeroes if necessary). As common in imaging settings, we can think of these measurements as 187 'variables'.  The response variable  is a categorical variable indicating whether the heartbeat  is normal or abnormal (0: normal, 1 abnormal).
+
+# Aim:
+
+To train a classification model that given the ECG signal of a heartbeat is able to predict whether it is normal or abnormal.
+
+#Dataset:
+
+The dataset has been stored in the file ptb.Rdata. It consists of the following components:
+
+X_train: a 12552x187 matrix where every row contains the th heartbeat signal;
+y_train: a vector of length 12552 with associated diagnostic labels (0: normal, 1 abnormal);
+X_test: a 2000x187 matrix where every row contains a heartbeat signal. For these 2000 test observations, we are not given the label.
+
+#Preliminary Data Analysis:
+
+```{r}
+#loading the .RData file
+load('/Users/nayankaushal/Desktop/BIOST 546/Final Project/ptb.RData')
+
+#creating data frame for training & validation
+df = cbind(X_train, label = y_train)
+
+#assigning X_test to test
+test = X_test
+
+#printing the dataframe
+head(df)
+
+#printing sample size
+nrow(df)
+
+#printing number of predictors
+length(df)-1
+
+#printing number of observations in each class
+table(df$label)
+```
+
+#Exploratory Data Analysis:
+
+```{r}
+#reshaping the dataset
+df_reshaped = df %>% mutate(id = rownames(df))
+df_reshaped = melt(df_reshaped, id = c("id", "label"))
+
+#plotting the normal ECG readings
+df_reshaped %>% filter(id == 1) %>% ggplot(aes(x = factor(variable), y = value, group = 1)) + geom_line() +labs(x= 'Readings', y = 'Values', title = 'Normal ECG Readings')
+
+#plotting the abnormal ECG readings
+df_reshaped %>% filter(id == 116) %>% ggplot(aes(x = factor(variable), y = value, group = 1)) + geom_line() +labs(x= 'Readings', y = 'Values', title = 'Abnormal ECG Readings')
+```
+```{r}
+#understanding the distribution of the data
+df %>% ggplot(aes(x = label)) + geom_histogram(stat = "count") + labs(title = "Distribution of Labels", x = "Label", y = "Count")
+```
+
+#Splitting the Training data into train and test:
+
+```{r}
+#setting seed
+set.seed(0)
+
+#dividing data into a training set of 400 observations and test set
+train_id = sample(nrow(df), as.integer(nrow(df)*0.7))
+train_df = df[train_id,]
+test_df  = df[-train_id,]
+```
+
+#Generalized Linear Model
+
+Creating a generalized linear model:
+
+```{r}
+#creating a generalized linear model using glm() function
+glm.model = glm(formula = label ~ ., family = binomial(link = "logit"), data = train_df)
+
+#printing the model summary
+summary(glm.model)
+```
+
+Training and Testing Model Accuracy:
+
+```{r}
+#========================================
+#Training
+#predicting the training set probability
+glm.prob.train = predict(glm.model, newdata = train_df,  type = "response")
+
+#predicting the outcome
+glm.label.train = rep(0, nrow(train_df))
+glm.label.train[glm.prob.train > .5] = 1
+
+print('Training Data Accuracy')
+# Prediction Accuracy
+mean(glm.label.train == train_df$label)
+
+print('Training Data Confusion Matrix')
+# Confusion matrix
+tt.glm.train = table(True = glm.label.train, Predicted = train_df$label)
+tt.glm.train
+
+#=============================================
+#Testing
+#predicting the test set probability
+glm.prob.test = predict(glm.model, newdata = test_df,  type = "response")
+
+#predicting the outcome
+glm.label.test = rep(0, nrow(test_df))
+glm.label.test[glm.prob.test > .5] = 1
+
+print('Testing Data Accuracy')
+# Prediction Accuracy
+mean(glm.label.test == test_df$label)
+
+print('Testing Data Confusion Matrix')
+# Confusion matrix
+tt.glm.test = table(True = glm.label.test, Predicted = test_df$label)
+tt.glm.test
+```
+
+#Ridge Regularization:
+
+```{r}
+#constructing data matrix X train
+X_train = model.matrix(label ~ -1 + ., data = train_df)
+
+#constructing outcome vector y train
+y_train = train_df$label
+
+#constructing data matrix X test
+X_test = model.matrix(label ~ -1 + ., data = test_df)
+
+#constructing outcome vector y test
+y_test = test_df$label
+
+# Validation set approach -- Train model only on training set
+grid = 10^seq(5,-18,length=100)
+ridge.mod = glmnet(X_train, y_train, alpha=0, lambda = grid, thresh =1e-8, family = "binomial")
+
+#plot ridge model
+plot(ridge.mod)
+
+#Performing 10 fold cross validation
+cv.out = cv.glmnet(X_train, y_train, alpha=0, lambda = grid, family = 'binomial', type.measure = "class")
+
+#plotting 10 fold cross validation
+plot(cv.out)
+
+#finding the optimal lambda value
+bestlam = cv.out$lambda.min
+print(paste0('Optimal Value of lambda = ',bestlam))
+
+#finding the best ridge model with the optimal lambda
+ridge.best = glmnet(X_train, y_train, alpha=0, lambda = bestlam, family = 'binomial', type.measure = "class")
+coef(ridge.best)
+```
+
+Training and Testing Model Accuracy:
+
+```{r}
+#Training
+#predicting the training set probability
+ridge.prob.train = predict(ridge.best, newx = X_train, type = "response")
+
+#predicting the outcome
+ridge.label.train = rep(0, nrow(X_train))
+ridge.label.train[ridge.prob.train > .5] = 1
+
+print('Training Data Accuracy')
+# Prediction Accuracy
+mean(ridge.label.train == y_train)
+
+print('Training Data Confusion Matrix')
+# Confusion matrix
+tt.ridge.train = table(True = ridge.label.train, Predicted = y_train)
+tt.ridge.train
+
+#Testing
+#predicting the test set probability
+ridge.prob.test = predict(ridge.best, newx = X_test,  type = "response")
+
+#predicting the outcome
+ridge.label.test = rep(0, nrow(X_test))
+ridge.label.test[ridge.prob.test > .5] = 1
+
+print('Testing Data Accuracy')
+# Prediction Accuracy
+mean(ridge.label.test == y_test)
+
+print('Testing Data Confusion Matrix')
+# Confusion matrix
+tt.ridge.test = table(True = ridge.label.test, Predicted = y_test)
+tt.ridge.test
+```
+
+#Decision Trees Model:
+
+```{r}
+# Fit (overgrown) tree
+tree.med<-tree(label~.,train_df)
+summary(tree.med)
+
+#plotting the overgrown tree
+dev.new()
+plot(tree.med)
+text(tree.med)
+
+#set seed
+set.seed(2)
+
+# performing cross validation on the overgrown tree to check for the best estimate of depth
+cv.med=cv.tree(tree.med, FUN=prune.misclass)
+cv.med
+plot(cv.med$size,cv.med$dev,type="b")
+
+# Pruning the overgrown tree
+prune.med<-prune.tree(tree.med,best=12)
+plot(prune.med)
+text(prune.med,pretty=0)
+
+```
+
+Training and Testing Accuracy:
+
+```{r}
+#Training
+#predicting the training set label
+tree.label.train = predict(prune.med, newdata = train_df,  type = "class")
+
+print('Training Data Accuracy')
+# Prediction Accuracy
+mean(tree.label.train == train_df$label)
+
+#=============================================
+#Testing
+#predicting the test set label
+tree.label.test = predict(prune.med, newdata = test_df,  type = "class")
+
+print('Test Data Accuracy')
+# Prediction Accuracy
+mean(tree.label.test == test_df$label)
+```
+
+#Random Forest Model:
+
+```{r}
+#setting seed
+set.seed(2)
+
+#random forest model with m = p/3 (which is 60)
+rf.med<-randomForest(label~., data=train_df, mtry = 60, importance=TRUE)
+
+#Predicting Training Data response and accuracy
+print('Training Data Accuracy')
+yhat.rf<-predict(rf.med, newdata=train_df)
+mean(yhat.rf == train_df$label)
+
+#Predicting Test Data response and accuracy
+print('Test Data Accuracy')
+yhat.rf<-predict(rf.med,newdata=test_df)
+mean(yhat.rf == test_df$label)
+
+#Plotting the variable importances
+importance(rf.med)
+varImpPlot(rf.med)
+```
